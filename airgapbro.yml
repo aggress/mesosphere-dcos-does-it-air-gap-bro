@@ -1,0 +1,103 @@
+---
+- hosts: master
+  become: true
+  tasks:
+    - name: Install the repo to get Python3
+      yum:
+        name: https://centos7.iuscommunity.org/ius-release.rpm
+        state: present
+
+    - name: Install python36u
+      yum:
+        name: python36u
+        state: present
+
+    - name: Symlink python36u to python3 for the Makefile
+      file:
+        src: /usr/bin/python3.6
+        dest: /usr/bin/python3
+        state: link
+
+    - name: Clone the local universe repo
+      git:
+        repo: 'https://github.com/mesosphere/universe.git'
+        dest: /root/universe
+        version: version-3.x
+
+    - name: Make the base
+      shell: make base
+      args:
+        chdir: /root/universe/docker/local-universe/
+
+    - name: Specify the list of packages to test
+      #shell: sed -i -e 's/--selected/--include="beta-cassandra,beta-confluent-kafka,beta-dse,beta-elastic,beta-hdfs,beta-kafka,beta-kibana"/' Makefile
+      shell: sed -i -e 's/--selected/--include="beta-cassandra"/' Makefile
+      args:
+        chdir: /root/universe/docker/local-universe
+
+    - name: Make the local universe
+      shell: make local-universe
+      args:
+        chdir: /root/universe/docker/local-universe/
+
+    - name: Get the local universe http systemd service file
+      get_url:
+        url: https://raw.githubusercontent.com/mesosphere/universe/version-3.x/docker/local-universe/dcos-local-universe-http.service
+        dest: /etc/systemd/system/dcos-local-universe-http.service
+        mode: 0644
+
+    - name: Get the local universe registry systemd service file
+      get_url:
+        url: https://raw.githubusercontent.com/mesosphere/universe/version-3.x/docker/local-universe/dcos-local-universe-registry.service
+        dest: /etc/systemd/system/dcos-local-universe-registry.service
+        mode: 0644
+
+    - name: Load the universe.. may take some time
+      shell: docker load < local-universe.tar.gz
+      args:
+        chdir: /root/universe/docker/local-universe/
+
+    - name: Systemd reload
+      shell: systemctl daemon-reexec
+
+    - name: Systemd enable dcos-local-universe-http.service
+      systemd:
+        name: dcos-local-universe-http.service
+        state: started
+        enabled: True
+
+    - name: Systemd enable dcos-local-universe-registry.service
+      systemd:
+        name: dcos-local-universe-registry.service
+        state: started
+        enabled: True
+
+    - name: Remove Universe
+      shell: /usr/local/bin/dcos package repo remove Universe
+
+    - name: Add local universe
+      shell: /usr/local/bin/dcos package repo add local-universe http://master.mesos:8082/repo
+
+    #- name: Airgap using iptables
+    #  shell: /bin/sh /vagrant/iptables-block.sh
+
+- hosts: private-agent
+  become: true
+  tasks:
+    - name: Create local certs dir
+      file: 
+        path: /etc/docker/certs.d/master.mesos:5000
+        state: directory
+
+    - name: Get the local universe http systemd service file
+      get_url:
+        url: http://192.168.33.11:8082/certs/domain.crt
+        dest: /etc/docker/certs.d/master.mesos:5000/ca.crt
+
+    - name: reload service httpd, in all cases
+      systemd:
+        name: docker
+        state: reloaded
+
+    #- name: Airgap using iptables
+    #  shell: /bin/sh /vagrant/iptables-block.sh
